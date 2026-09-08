@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111">
+  <title>PersonCam</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>PersonCam</h1>
+      <span id="status">Bereit</span>
+    </header>
+    <section class="viewer">
+      <video id="preview" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div id="recBadge">● REC</div>
+    </section>
+    <section class="controls">
+      <button id="start">Kamera starten</button>
+      <button id="stop" disabled>Stoppen</button>
+      <label>Nachlauf (Sekunden) <input id="grace" type="number" min="1" max="30" value="4"></label>
+    </section>
+    <section><h2>Aufnahmen</h2><div id="recordings"></div></section>
+    <p class="note">Kamera und Erkennung laufen lokal im Browser. Videos werden erst durch dein ausdrückliches Speichern als Datei dauerhaft abgelegt.</p>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
