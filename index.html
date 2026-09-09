@@ -9,24 +9,43 @@
 </head>
 <body>
   <main>
-    <header><h1>PersonCam</h1><span id="status">Bereit</span></header>
+    <header>
+      <h1>PersonCam</h1>
+      <span id="status">Bereit</span>
+    </header>
+
     <section class="viewer">
       <video id="preview" autoplay muted playsinline></video>
       <canvas id="overlay"></canvas>
-      <div id="recBadge">● REC <span id="recordingTime">00:00</span></div>
-      <div id="hud"><span>FACE TRACKING</span><span id="faceCount">0 FACE</span></div>
+      <div id="recBadge">● REC</div>
     </section>
+
     <section class="controls">
       <button id="start">Kamera starten</button>
       <button id="stop" disabled>Stoppen</button>
-      <label>Nachlauf (Sekunden) <input id="grace" type="number" min="1" max="30" value="4"></label>
+      <label>
+        Nachlauf (Sekunden)
+        <input id="grace" type="number" min="1" max="30" value="4">
+      </label>
+      <label title="Wie sicher sich die KI sein muss, bevor eine Person zählt">
+        Empfindlichkeit (%)
+        <input id="sensitivity" type="number" min="30" max="90" step="5" value="55">
+      </label>
     </section>
-    <section><h2>Aufnahmen</h2><div id="recordings"></div></section>
-    <p class="note">Kamera, Personen- und Gesichtserkennung laufen lokal im Browser. Es wird nichts hochgeladen.</p>
+
+    <section>
+      <h2>Aufnahmen</h2>
+      <div id="recordings"></div>
+    </section>
+
+    <p class="note">
+      Die Kamera und Erkennung laufen lokal im Browser. Videos werden erst durch
+      dein ausdrückliches Speichern als Datei dauerhaft abgelegt.
+    </p>
   </main>
+
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
