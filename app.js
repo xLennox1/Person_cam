@@ -1,354 +1,383 @@
 /* ============================================================
    PersonCam – DOM-Referenzen
    ============================================================ */
+const pinScreen   = document.getElementById('pinScreen');
+const pinInput    = document.getElementById('pinInput');
+const pinError    = document.getElementById('pinError');
+const pinSubmit   = document.getElementById('pinSubmit');
 
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const ctx = overlay.getContext('2d');
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const statusEl = document.getElementById('status');
-const countEl = document.getElementById('count');
-const settingsBtn = document.getElementById('settingsBtn');
-const galleryBtn = document.getElementById('galleryBtn');
-const pinGate = document.getElementById('pinGate');
-const pinInput = document.getElementById('pinInput');
-const pinBtn = document.getElementById('pinBtn');
-const pinError = document.getElementById('pinError');
-const appEl = document.getElementById('app');
-const settingsPanel = document.getElementById('settingsPanel');
-const galleryPanel = document.getElementById('galleryPanel');
-const closeSettingsBtn = document.getElementById('closeSettingsBtn');
-const closeGalleryBtn = document.getElementById('closeGalleryBtn');
-const recordingsEl = document.getElementById('recordings');
-const facesEl = document.getElementById('faces');
-const clearRecordingsBtn = document.getElementById('clearRecordingsBtn');
-const clearFacesBtn = document.getElementById('clearFacesBtn');
-const pinChangeInput = document.getElementById('pinChangeInput');
-const pinChangeBtn = document.getElementById('pinChangeBtn');
-const sensitivityRange = document.getElementById('sensitivityRange');
-const sensitivityValue = document.getElementById('sensitivityValue');
-const autoRecordToggle = document.getElementById('autoRecordToggle');
-const snapshotsToggle = document.getElementById('snapshotsToggle');
-const statusDot = document.getElementById('statusDot');
-const personLabel = document.getElementById('personLabel');
-const cameraSelect = document.getElementById('cameraSelect');
-const mirrorToggle = document.getElementById('mirrorToggle');
+const appRoot   = document.getElementById('app');
+const video     = document.getElementById('preview');
+const canvas    = document.getElementById('overlay');
+const ctx       = canvas.getContext('2d');
+const statusEl  = document.getElementById('status');
+const recBadge  = document.getElementById('recBadge');
+const recTimerEl = document.getElementById('recTimer');
+const startBtn  = document.getElementById('start');
+const stopBtn   = document.getElementById('stop');
+
+const settingsBtn      = document.getElementById('settingsBtn');
+const lockBtn           = document.getElementById('lockBtn');
+const settingsOverlay   = document.getElementById('settingsOverlay');
+const closeSettingsBtn  = document.getElementById('closeSettings');
+
+const graceInput                 = document.getElementById('grace');
+const sensitivityInput           = document.getElementById('sensitivity');
+const trackingEnabledInput       = document.getElementById('trackingEnabled');
+const faceSnapshotsEnabledInput  = document.getElementById('faceSnapshotsEnabled');
+const faceMinConfidenceInput     = document.getElementById('faceMinConfidence');
+const faceCooldownInput          = document.getElementById('faceCooldown');
+
+const changePinBtn   = document.getElementById('changePinBtn');
+const changePinForm  = document.getElementById('changePinForm');
+const currentPinInput= document.getElementById('currentPin');
+const newPinInput    = document.getElementById('newPin');
+const newPin2Input   = document.getElementById('newPin2');
+const pinChangeMsg   = document.getElementById('pinChangeMsg');
+const savePinBtn     = document.getElementById('savePinBtn');
+const lockNowBtn     = document.getElementById('lockNowBtn');
+
+const tabBtns          = document.querySelectorAll('.tab-btn');
+const recordingsPanel  = document.getElementById('recordingsPanel');
+const facesPanel       = document.getElementById('facesPanel');
+const recordingsList   = document.getElementById('recordings');
+const recordingsEmpty  = document.getElementById('recordingsEmpty');
+const clearVideosBtn   = document.getElementById('clearVideos');
+const faceGallery      = document.getElementById('faceGallery');
+const facesEmpty       = document.getElementById('facesEmpty');
+const clearFacesBtn    = document.getElementById('clearFaces');
+
+const lightbox          = document.getElementById('lightbox');
+const lightboxImg       = document.getElementById('lightboxImg');
+const lightboxDownload  = document.getElementById('lightboxDownload');
+const lightboxDelete    = document.getElementById('lightboxDelete');
+const closeLightboxBtn  = document.getElementById('closeLightbox');
 
 /* ============================================================
    Konfiguration
    ============================================================ */
-
-const MODEL_BASE = 'mobilenet_v2';
-const DETECT_INTERVAL_MS = 300;
-const CONFIRM_HITS = 2;
+const MODEL_BASE = 'mobilenet_v2';     // genaueres COCO-SSD-Modell
+const DETECT_INTERVAL_MS = 300;        // ca. 3 Erkennungen/Sek.
+const CONFIRM_HITS = 2;                // Bestätigungs-Frames vor Aufnahmestart
+const MIN_BOX_HEIGHT_RATIO = 0.04;     // sehr kleine Personen-Boxen ignorieren
 const MAX_CONSECUTIVE_ERRORS = 5;
-const DEFAULT_SENSITIVITY = 0.55;
-const DB_NAME = 'PersonCamDB';
-const DB_VERSION = 1;
 
-let stream = null;
-let running = false;
-let detecting = false;
-let detectionTimer = null;
-let cocoModel = null;
-let faceModel = null;
-let consecutiveErrors = 0;
-let hitCount = 0;
-let personCount = 0;
-let lastPersonSeen = false;
-let recorder = null;
-let recordingChunks = [];
-let recordingStartedAt = 0;
-let recordingStopTimer = null;
-let lastSnapshotAt = 0;
-let settings = {
-  sensitivity: DEFAULT_SENSITIVITY,
-  autoRecord: true,
-  snapshots: true,
-  mirror: false
-};
-let db = null;
+const TRACK_TIMEOUT_MS = 2000;         // Ephemere ID "vergessen" nach 2s ohne Sichtkontakt
+const TRACK_MATCH_DIST = 0.25;         // normalisierter Abstand für "gleiche Spur"
+
+const DB_NAME = 'personcam-db';
+const DB_VERSION = 1;
+const STORE_VIDEOS = 'videos';
+const STORE_FACES = 'faces';
+
+const DEFAULT_PIN = '1234';
+const PBKDF2_ITERATIONS = 20000;
 
 /* ============================================================
    Hilfsfunktionen
    ============================================================ */
+function setStatus(s){ statusEl.textContent = s; }
 
-function setStatus(text, state = '') {
-  if (statusEl) statusEl.textContent = text;
-  if (statusDot) statusDot.className = `status-dot ${state}`.trim();
+function formatDuration(totalSeconds){
+  const m = Math.floor(totalSeconds/60);
+  const s = totalSeconds%60;
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
-function resizeOverlay() {
-  if (!video.videoWidth || !video.videoHeight) return;
-  overlay.width = video.videoWidth;
-  overlay.height = video.videoHeight;
+function formatFilenameStamp(ts){
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
 }
 
-function drawHud() {
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  if (settings.mirror) {
-    ctx.save();
-    ctx.translate(overlay.width, 0);
-    ctx.scale(-1, 1);
-  }
-  ctx.strokeStyle = 'rgba(0,255,140,.28)';
-  ctx.lineWidth = 1;
-  const step = Math.max(60, overlay.width / 12);
-  for (let x = 0; x < overlay.width; x += step) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, overlay.height); ctx.stroke();
-  }
-  for (let y = 0; y < overlay.height; y += step) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(overlay.width, y); ctx.stroke();
-  }
-  if (settings.mirror) ctx.restore();
+function bytesToBase64(bytes){
+  let bin = '';
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin);
 }
-
-function drawBox(box, label, confidence) {
-  const [x, y, w, h] = box;
-  ctx.save();
-  ctx.strokeStyle = '#00ff8c';
-  ctx.fillStyle = 'rgba(0,255,140,.08)';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = '#00ff8c';
-  ctx.shadowBlur = 12;
-  ctx.strokeRect(x, y, w, h);
-  ctx.shadowBlur = 0;
-  ctx.font = 'bold 16px system-ui';
-  const text = `${label} ${Math.round(confidence * 100)}%`;
-  const tw = ctx.measureText(text).width + 18;
-  ctx.fillStyle = 'rgba(0,20,15,.86)';
-  ctx.fillRect(x, Math.max(0, y - 30), tw, 30);
-  ctx.fillStyle = '#00ff8c';
-  ctx.fillText(text, x + 9, Math.max(20, y - 9));
-  const c = 12;
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
-  ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
-  ctx.moveTo(x, y + h - c); ctx.lineTo(x, y + h); ctx.lineTo(x + c, y + h);
-  ctx.moveTo(x + w - c, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - c);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawFaceCircle(x, y, r) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.strokeStyle = '#00ff8c';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = '#00ff8c';
-  ctx.shadowBlur = 15;
-  ctx.beginPath();
-  ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  ctx.lineWidth = 1;
-  ctx.setLineDash([6, 6]);
-  ctx.beginPath();
-  ctx.arc(0, 0, r + 8, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = '#00ff8c';
-  ctx.font = 'bold 12px system-ui';
-  ctx.fillText('FACE SCAN', -r, -r - 10);
-  ctx.restore();
-}
-
-function blobFromCanvas() {
-  return new Promise(resolve => overlay.toBlob(resolve, 'image/jpeg', 0.88));
-}
-
-function pickRecorderMime() {
-  const types = [
-    'video/mp4;codecs=avc1,mp4a.40.2',
-    'video/mp4',
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm'
-  ];
-  return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+function base64ToBytes(b64){
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
 
 /* ============================================================
-   IndexedDB
+   IndexedDB – kleine generische Helfer
    ============================================================ */
-
-function openDB() {
-  return new Promise((resolve, reject) => {
+let dbPromise = null;
+function getDB(){
+  if(dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    if(!('indexedDB' in window)){ reject(new Error('IndexedDB nicht verfügbar')); return; }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const database = req.result;
-      if (!database.objectStoreNames.contains('recordings')) database.createObjectStore('recordings', { keyPath: 'id', autoIncrement: true });
-      if (!database.objectStoreNames.contains('faces')) database.createObjectStore('faces', { keyPath: 'id', autoIncrement: true });
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE_VIDEOS)) db.createObjectStore(STORE_VIDEOS,{keyPath:'id'});
+      if(!db.objectStoreNames.contains(STORE_FACES))  db.createObjectStore(STORE_FACES,{keyPath:'id'});
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
+  });
+  return dbPromise;
+}
+async function idbPut(store, record){
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
-
-function dbAdd(store, value) {
+async function idbGetAll(store){
+  const db = await getDB();
   return new Promise((resolve, reject) => {
-    const req = db.transaction(store, 'readwrite').objectStore(store).add(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function dbGetAll(store) {
-  return new Promise((resolve, reject) => {
-    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
+    const tx = db.transaction(store,'readonly');
+    const req = tx.objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
 }
-
-function dbClear(store) {
+async function idbDelete(store, id){
+  const db = await getDB();
   return new Promise((resolve, reject) => {
-    const req = db.transaction(store, 'readwrite').objectStore(store).clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbClear(store){
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store,'readwrite');
+    tx.objectStore(store).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 
 /* ============================================================
-   PIN
+   Einstellungen (localStorage)
    ============================================================ */
+const DEFAULT_SETTINGS = {
+  grace:4, sensitivity:55, trackingEnabled:true,
+  faceSnapshotsEnabled:true, faceMinConfidence:70, faceCooldown:5
+};
 
-function getPin() {
-  return localStorage.getItem('personcam_pin') || '1234';
+function loadSettings(){
+  let s = { ...DEFAULT_SETTINGS };
+  try{
+    const raw = localStorage.getItem('personcam_settings');
+    if(raw) s = { ...s, ...JSON.parse(raw) };
+  }catch(e){ console.error('Einstellungen konnten nicht geladen werden', e); }
+
+  graceInput.value = s.grace;
+  sensitivityInput.value = s.sensitivity;
+  trackingEnabledInput.checked = s.trackingEnabled;
+  faceSnapshotsEnabledInput.checked = s.faceSnapshotsEnabled;
+  faceMinConfidenceInput.value = s.faceMinConfidence;
+  faceCooldownInput.value = s.faceCooldown;
 }
 
-function unlock() {
-  if (pinInput.value === getPin()) {
-    pinGate.classList.add('hidden');
-    appEl.classList.remove('hidden');
-    pinError.textContent = '';
-    localStorage.setItem('personcam_unlocked', '1');
-    initAfterUnlock();
-  } else {
-    pinError.textContent = 'Falsche PIN';
-    pinInput.select();
-  }
+function saveSettings(){
+  const s = {
+    grace: Number(graceInput.value) || 4,
+    sensitivity: Number(sensitivityInput.value) || 55,
+    trackingEnabled: trackingEnabledInput.checked,
+    faceSnapshotsEnabled: faceSnapshotsEnabledInput.checked,
+    faceMinConfidence: Number(faceMinConfidenceInput.value) || 70,
+    faceCooldown: Number(faceCooldownInput.value) || 5
+  };
+  try{ localStorage.setItem('personcam_settings', JSON.stringify(s)); }
+  catch(e){ console.error('Einstellungen konnten nicht gespeichert werden', e); }
 }
 
-function changePin() {
-  const p = pinChangeInput.value.trim();
-  if (!/^\d{4,8}$/.test(p)) {
-    alert('Bitte eine PIN mit 4–8 Ziffern eingeben.');
-    return;
-  }
-  localStorage.setItem('personcam_pin', p);
-  pinChangeInput.value = '';
-  alert('PIN gespeichert.');
+[graceInput, sensitivityInput, trackingEnabledInput, faceSnapshotsEnabledInput, faceMinConfidenceInput, faceCooldownInput]
+  .forEach(el => el.addEventListener('change', saveSettings));
+
+function getThreshold(){
+  const raw = Number(sensitivityInput.value);
+  return Number.isNaN(raw) ? 0.55 : Math.min(0.9, Math.max(0.3, raw/100));
+}
+function getFaceMinConfidence(){
+  const raw = Number(faceMinConfidenceInput.value);
+  return Number.isNaN(raw) ? 0.7 : Math.min(0.99, Math.max(0.3, raw/100));
+}
+function getFaceCooldownMs(){
+  const raw = Number(faceCooldownInput.value);
+  return Math.max(1, raw || 5) * 1000;
 }
 
 /* ============================================================
-   Kamera
+   PIN-Schutz (PBKDF2 über Web Crypto API, nichts im Klartext)
    ============================================================ */
-
-async function listCameras() {
-  if (!navigator.mediaDevices?.enumerateDevices || !cameraSelect) return;
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const cameras = devices.filter(d => d.kind === 'videoinput');
-    cameraSelect.innerHTML = '';
-    cameras.forEach((cam, i) => {
-      const option = document.createElement('option');
-      option.value = cam.deviceId;
-      option.textContent = cam.label || `Kamera ${i + 1}`;
-      cameraSelect.appendChild(option);
-    });
-  } catch (e) {
-    console.warn('Kameras konnten nicht aufgelistet werden', e);
-  }
+async function derivePinHash(pin, saltBytes){
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name:'PBKDF2', salt:saltBytes, iterations:PBKDF2_ITERATIONS, hash:'SHA-256' },
+    keyMaterial, 256
+  );
+  return bytesToBase64(new Uint8Array(bits));
+}
+async function setPin(pin){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await derivePinHash(pin, salt);
+  localStorage.setItem('personcam_pin_salt', bytesToBase64(salt));
+  localStorage.setItem('personcam_pin_hash', hash);
+}
+async function verifyPin(pin){
+  const saltB64 = localStorage.getItem('personcam_pin_salt');
+  const storedHash = localStorage.getItem('personcam_pin_hash');
+  if(!saltB64 || !storedHash) return false;
+  const hash = await derivePinHash(pin, base64ToBytes(saltB64));
+  return hash === storedHash;
+}
+async function ensurePinProvisioned(){
+  if(!localStorage.getItem('personcam_pin_hash')) await setPin(DEFAULT_PIN);
 }
 
-async function startCamera() {
-  if (running) return;
-  if (!navigator.mediaDevices?.getUserMedia) {
-    alert('Dieser Browser unterstützt keinen Kamerazugriff. Bitte Safari/Chrome über HTTPS verwenden.');
-    return;
-  }
+async function unlockApp(){
+  pinScreen.hidden = true;
+  appRoot.hidden = false;
+  await Promise.all([renderRecordings(), renderFaces()]);
+}
 
-  try {
-    const deviceId = cameraSelect?.value;
-    const videoConstraints = {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      facingMode: { ideal: 'environment' }
-    };
-    if (deviceId) {
-      delete videoConstraints.facingMode;
-      videoConstraints.deviceId = { exact: deviceId };
+function lockApp(){
+  closeSettingsSheet();
+  if(running) stopCamera();
+  appRoot.hidden = true;
+  pinInput.value = '';
+  pinError.hidden = true;
+  pinScreen.hidden = false;
+  pinInput.focus();
+}
+
+async function handlePinSubmit(){
+  const value = pinInput.value.trim();
+  if(!value) return;
+
+  pinSubmit.disabled = true;
+  pinSubmit.textContent = 'Prüfe…';
+  try{
+    const ok = await verifyPin(value);
+    if(ok){
+      pinInput.value = '';
+      pinError.hidden = true;
+      await unlockApp();
+    }else{
+      pinError.textContent = 'Falsche PIN.';
+      pinError.hidden = false;
+      pinInput.value = '';
+      pinInput.focus();
     }
+  }catch(e){
+    console.error('PIN-Prüfung fehlgeschlagen', e);
+    pinError.textContent = 'PIN-Prüfung nicht möglich (Web-Crypto-Funktion fehlt – HTTPS/localhost erforderlich).';
+    pinError.hidden = false;
+  }finally{
+    pinSubmit.disabled = false;
+    pinSubmit.textContent = 'Entsperren';
+  }
+}
+pinSubmit.addEventListener('click', handlePinSubmit);
+pinInput.addEventListener('keydown', e => { if(e.key === 'Enter') handlePinSubmit(); });
+lockBtn.addEventListener('click', lockApp);
+lockNowBtn.addEventListener('click', lockApp);
 
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: videoConstraints,
-      audio: true
-    });
+changePinBtn.addEventListener('click', () => {
+  changePinForm.hidden = !changePinForm.hidden;
+  pinChangeMsg.hidden = true;
+  currentPinInput.value = '';
+  newPinInput.value = '';
+  newPin2Input.value = '';
+});
 
-    video.srcObject = stream;
-    video.muted = true;
-    video.playsInline = true;
-    await video.play();
-    resizeOverlay();
-    running = true;
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    setStatus('Kamera läuft – KI-Modelle werden geladen…', 'ok');
-    detectLoop();
+function showPinChangeMsg(text, ok){
+  pinChangeMsg.textContent = text;
+  pinChangeMsg.style.color = ok ? 'var(--green)' : 'var(--red)';
+  pinChangeMsg.hidden = false;
+}
 
-    try {
-      await loadModels();
-      if (running) {
-        setStatus('Bereit – Personen werden erkannt', 'ok');
+savePinBtn.addEventListener('click', async () => {
+  const cur = currentPinInput.value.trim();
+  const next = newPinInput.value.trim();
+  const next2 = newPin2Input.value.trim();
+
+  if(!cur || !next || !next2){ showPinChangeMsg('Bitte alle Felder ausfüllen.'); return; }
+  if(next.length < 4){ showPinChangeMsg('Neue PIN muss mindestens 4 Zeichen haben.'); return; }
+  if(next !== next2){ showPinChangeMsg('Neue PIN stimmt nicht überein.'); return; }
+
+  try{
+    const ok = await verifyPin(cur);
+    if(!ok){ showPinChangeMsg('Aktuelle PIN ist falsch.'); return; }
+    await setPin(next);
+    currentPinInput.value = ''; newPinInput.value = ''; newPin2Input.value = '';
+    showPinChangeMsg('PIN wurde geändert.', true);
+  }catch(e){
+    console.error('PIN-Änderung fehlgeschlagen', e);
+    showPinChangeMsg('PIN konnte nicht geändert werden.');
+  }
+});
+
+/* ============================================================
+   Ephemere Nachverfolgung (NICHT biometrisch)
+   Ordnet Boxen nur innerhalb einer laufenden Kamerasitzung anhand
+   von Position/Größe eine fortlaufende Nummer zu. Es wird kein
+   Gesicht "wiedererkannt" und keine Identität gespeichert – nach
+   Stop/Start oder 2s außer Sicht beginnt die Zählung neu.
+   ============================================================ */
+function createTracker(){
+  let nextId = 1;
+  let slots = [];
+
+  return {
+    update(boxes, frameW, frameH){
+      const now = performance.now();
+      const used = new Set();
+      const results = [];
+
+      for(const box of boxes){
+        const cx = box[0] + box[2]/2;
+        const cy = box[1] + box[3]/2;
+        let best = null, bestDist = Infinity;
+
+        for(const existing of slots){
+          if(used.has(existing)) continue;
+          const dx = (cx - existing.cx) / frameW;
+          const dy = (cy - existing.cy) / frameH;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if(dist < bestDist){ bestDist = dist; best = existing; }
+        }
+
+        const slot = (best && bestDist <= TRACK_MATCH_DIST) ? best : { id: nextId++, cx, cy, lastSeen: now };
+        slot.cx = cx; slot.cy = cy; slot.lastSeen = now;
+        if(!slots.includes(slot)) slots.push(slot);
+        used.add(slot);
+        results.push({ box, id: slot.id });
       }
-    } catch (e) {
-      console.error('KI-Modelle konnten nicht geladen werden:', e);
-      setStatus('Kamera läuft – KI-Modelle nicht verfügbar', 'warn');
-      alert('Die Erkennungsmodelle konnten nicht geladen werden. Bitte Internetverbindung prüfen und erneut versuchen.');
-    }
-  } catch (e) {
-    console.error('Kamerafehler:', e);
-    const name = e?.name || '';
-    let message = 'Kamera konnte nicht gestartet werden.';
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      message = 'Kamerazugriff wurde verweigert. Bitte in den Browser-Einstellungen die Kamera erlauben.';
-    } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-      message = 'Keine Kamera gefunden.';
-    } else if (name === 'NotReadableError') {
-      message = 'Die Kamera wird bereits von einer anderen App verwendet.';
-    }
-    setStatus('Kamera nicht gestartet', 'error');
-    alert(message);
-  }
-}
 
-function stopCamera() {
-  running = false;
-  detecting = false;
-  clearTimeout(detectionTimer);
-  if (recordingStopTimer) clearTimeout(recordingStopTimer);
-  if (recorder && recorder.state !== 'inactive') recorder.stop();
-  recorder = null;
-  if (stream) stream.getTracks().forEach(track => track.stop());
-  stream = null;
-  video.srcObject = null;
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  setStatus('Kamera gestoppt');
-  personLabel.textContent = '0 PERSONEN';
-  countEl.textContent = '0';
-  lastPersonSeen = false;
+      slots = slots.filter(s => (now - s.lastSeen) <= TRACK_TIMEOUT_MS);
+      return results;
+    },
+    reset(){ slots = []; nextId = 1; }
+  };
 }
+const personTracker = createTracker();
+const faceTracker = createTracker();
 
 /* ============================================================
-   KI-Modelle / Erkennung
-   ============================================================
+   Kamera + KI-Modelle
+   ============================================================ */
+let stream, cocoModel, faceModel;
+let running = false;
+let lastVideoTime = -1, lastDetectAt = 0, detecting = false;
+let personStreak = 0, consecutiveErrors = 0;
+const faceSnapshotTimes = new Map();
 
-async function loadModels() {
+async function loadModels(){
   const [coco, face] = await Promise.all([
     cocoModel || cocoSsd.load({ base: MODEL_BASE }),
     faceModel || blazeface.load()
@@ -357,283 +386,491 @@ async function loadModels() {
   faceModel = face;
 }
 
-async function detectLoop() {
-  if (!running || detecting) return;
-  detecting = true;
-  try {
-    resizeOverlay();
-    drawHud();
+async function startCamera(){
+  if(running) return;
 
-    if (!cocoModel || !faceModel || video.readyState < 2) {
-      detecting = false;
-      if (running) detectionTimer = setTimeout(detectLoop, DETECT_INTERVAL_MS);
-      return;
-    }
-
-    const [objects, faces] = await Promise.all([
-      cocoModel.detect(video),
-      faceModel.estimateFaces(video, false)
-    ]);
-
-    const people = objects.filter(o => o.class === 'person' && o.score >= Number(settings.sensitivity));
-    if (people.length) {
-      hitCount++;
-      if (hitCount >= CONFIRM_HITS) {
-        personCount = people.length;
-        countEl.textContent = String(personCount);
-        personLabel.textContent = `${personCount} PERSON${personCount === 1 ? '' : 'EN'}`;
-        if (!lastPersonSeen) {
-          lastPersonSeen = true;
-          if (settings.autoRecord) startRecording();
-        }
-      }
-      people.forEach(p => drawBox(p.bbox, 'PERSON', p.score));
-    } else {
-      hitCount = 0;
-      personCount = 0;
-      countEl.textContent = '0';
-      personLabel.textContent = '0 PERSONEN';
-      if (lastPersonSeen) {
-        lastPersonSeen = false;
-        scheduleStopRecording();
-      }
-    }
-
-    if (faces?.length) {
-      faces.forEach(face => {
-        const tl = face.topLeft;
-        const br = face.bottomRight;
-        const x = Array.isArray(tl) ? tl[0] : tl.x;
-        const y = Array.isArray(tl) ? tl[1] : tl.y;
-        const bx = Array.isArray(br) ? br[0] : br.x;
-        const by = Array.isArray(br) ? br[1] : br.y;
-        const w = bx - x;
-        const h = by - y;
-        drawFaceCircle(x + w / 2, y + h / 2, Math.max(w, h) / 2);
-      });
-      if (settings.snapshots && Date.now() - lastSnapshotAt > 2500) {
-        lastSnapshotAt = Date.now();
-        await saveFaceSnapshot();
-      }
-    }
-
-    consecutiveErrors = 0;
-  } catch (e) {
-    consecutiveErrors++;
-    console.warn('Erkennung fehlgeschlagen:', e);
-    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      setStatus('Erkennung pausiert – Kamera läuft weiter', 'warn');
-      consecutiveErrors = 0;
-    }
-  } finally {
-    detecting = false;
-    if (running) detectionTimer = setTimeout(detectLoop, DETECT_INTERVAL_MS);
-  }
-}
-
-/* ============================================================
-   Recording
-   ============================================================ */
-
-function startRecording() {
-  if (!stream || recorder?.state === 'recording') return;
-  const mime = pickRecorderMime();
-  try {
-    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  } catch (e) {
-    console.warn('MediaRecorder nicht verfügbar:', e);
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
+      audio:true
+    });
+  }catch(e){
+    console.error(e);
+    let msg = 'Bitte erlaube den Kamera-/Mikrofonzugriff. Die Seite muss in der Regel über HTTPS oder localhost laufen.';
+    if(e.name === 'NotFoundError') msg = 'Keine Kamera gefunden.';
+    else if(e.name === 'NotReadableError') msg = 'Die Kamera wird bereits von einer anderen App verwendet.';
+    else if(e.name === 'NotAllowedError') msg = 'Kamera-/Mikrofonzugriff wurde verweigert.';
+    setStatus('Kamera konnte nicht gestartet werden');
+    alert(msg);
     return;
   }
-  recordingChunks = [];
-  recordingStartedAt = Date.now();
-  recorder.ondataavailable = e => {
-    if (e.data?.size) recordingChunks.push(e.data);
-  };
-  recorder.onstop = async () => {
-    if (!recordingChunks.length) return;
-    const type = recorder?.mimeType || mime || 'video/webm';
-    const blob = new Blob(recordingChunks, { type });
-    try {
-      await dbAdd('recordings', {
-        blob,
-        type,
-        createdAt: Date.now(),
-        duration: Date.now() - recordingStartedAt
-      });
-      setStatus('Aufnahme gespeichert', 'ok');
-    } catch (e) {
-      console.warn('Aufnahme konnte nicht gespeichert werden:', e);
+
+  video.srcObject = stream;
+  await video.play();
+  running = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  try{
+    setStatus('Kamera läuft – KI-Modelle werden geladen…');
+    await loadModels();
+    personStreak = 0;
+    detecting = false;
+    consecutiveErrors = 0;
+    personTracker.reset();
+    faceTracker.reset();
+    faceSnapshotTimes.clear();
+    setStatus('Bereit – Personen werden erkannt');
+    detectLoop();
+  }catch(e){
+    console.error(e);
+    running = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    stream?.getTracks().forEach(t=>t.stop());
+    stream = null;
+    video.srcObject = null;
+    setStatus('KI-Modelle konnten nicht geladen werden');
+    alert('Die Erkennungsmodelle konnten nicht geladen werden. Bitte Internetverbindung prüfen und erneut versuchen.');
+  }
+}
+
+function stopCamera(){
+  running = false;
+  clearTimeout(stopTimer);
+  stopTimer = null;
+  if(recording) stopRecording();
+  stream?.getTracks().forEach(t=>t.stop());
+  stream = null;
+  video.srcObject = null;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  personStreak = 0;
+  detecting = false;
+  lastDetectAt = 0;
+  consecutiveErrors = 0;
+  personTracker.reset();
+  faceTracker.reset();
+  setStatus('Gestoppt');
+}
+
+/* ============================================================
+   Erkennung (Personen + Gesichter parallel je Zyklus)
+   ============================================================ */
+function boxIsBigEnough(bbox, frameHeight){
+  return (bbox[3] / frameHeight) >= MIN_BOX_HEIGHT_RATIO;
+}
+
+async function detectLoop(){
+  if(!running || !cocoModel || !faceModel) return;
+
+  const now = performance.now();
+  const newFrame = video.readyState >= 2 && video.currentTime !== lastVideoTime;
+
+  if(newFrame && !detecting && (now - lastDetectAt) >= DETECT_INTERVAL_MS){
+    lastVideoTime = video.currentTime;
+    lastDetectAt = now;
+    detecting = true;
+
+    try{
+      const frameW = video.videoWidth || 1280;
+      const frameH = video.videoHeight || 720;
+      const threshold = getThreshold();
+
+      const [predictions, faces] = await Promise.all([
+        cocoModel.detect(video),
+        faceModel.estimateFaces(video, false)
+      ]);
+
+      const people = predictions.filter(p =>
+        p.class === 'person' && p.score >= threshold && boxIsBigEnough(p.bbox, frameH)
+      );
+
+      const faceBoxes = faces.map(f => {
+        const [x1,y1] = f.topLeft;
+        const [x2,y2] = f.bottomRight;
+        const score = Array.isArray(f.probability) ? f.probability[0] : f.probability;
+        return { bbox:[x1,y1,x2-x1,y2-y1], score };
+      }).filter(f => f.score >= getFaceMinConfidence());
+
+      const trackedPeople = trackingEnabledInput.checked
+        ? personTracker.update(people.map(p=>p.bbox), frameW, frameH)
+        : people.map(p => ({ box:p.bbox, id:null }));
+      const trackedFaces = faceTracker.update(faceBoxes.map(f=>f.bbox), frameW, frameH);
+
+      drawHud(people, trackedPeople, faceBoxes, trackedFaces);
+      maybeCaptureFaceSnapshots(faceBoxes, trackedFaces);
+
+      if(people.length){
+        if(stopTimer){ clearTimeout(stopTimer); stopTimer = null; }
+        personStreak++;
+        if(!recording){
+          if(personStreak >= CONFIRM_HITS){
+            startRecording();
+          }else{
+            setStatus(`Person erkannt – bestätige… (${personStreak}/${CONFIRM_HITS})`);
+          }
+        }
+      }else{
+        if(personStreak > 0 && !recording) setStatus('Bereit – Personen werden erkannt');
+        personStreak = 0;
+        if(recording && !stopTimer){
+          const seconds = Math.max(1, Number(graceInput.value) || 4);
+          stopTimer = setTimeout(()=>{ stopTimer = null; stopRecording(); }, seconds*1000);
+        }
+      }
+      consecutiveErrors = 0;
+    }catch(err){
+      console.error('Erkennung fehlgeschlagen:', err);
+      consecutiveErrors++;
+      if(consecutiveErrors >= MAX_CONSECUTIVE_ERRORS){
+        setStatus('Erkennung läuft instabil – Seite bei Bedarf neu laden');
+      }
+    }finally{
+      detecting = false;
     }
-    recordingChunks = [];
+  }
+
+  requestAnimationFrame(detectLoop);
+}
+
+function drawBox(x,y,w,h,label,color){
+  const labelWidth = ctx.measureText(label).width + 12;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(2, canvas.width/450);
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, Math.max(0,y-22), labelWidth, 20);
+  ctx.fillStyle = '#000';
+  ctx.fillText(label, x+6, Math.max(15,y-7));
+}
+
+function drawFaceCircle(x,y,w,h,label,color){
+  const cx = x + w/2;
+  const cy = y + h/2;
+  const r = Math.max(w,h) * 0.62;
+  const pulse = 8 + 5 * Math.sin(performance.now() / 260); // leichtes "Scanner"-Pulsieren
+
+  ctx.save();
+  ctx.shadowColor = color;
+  ctx.shadowBlur = pulse;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(2, canvas.width/450);
+
+  // Ring um das Gesicht
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.stroke();
+
+  // vier kurze Fadenkreuz-Ticks außen am Ring (Scanner-Optik)
+  const gap = r * 0.14, tick = r * 0.24;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r - gap);  ctx.lineTo(cx, cy - r - gap - tick);
+  ctx.moveTo(cx, cy + r + gap);  ctx.lineTo(cx, cy + r + gap + tick);
+  ctx.moveTo(cx - r - gap, cy);  ctx.lineTo(cx - r - gap - tick, cy);
+  ctx.moveTo(cx + r + gap, cy);  ctx.lineTo(cx + r + gap + tick, cy);
+  ctx.stroke();
+  ctx.restore();
+
+  const labelWidth = ctx.measureText(label).width + 12;
+  const ly = Math.min(canvas.height - 6, cy + r + gap + tick + 16);
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - labelWidth/2, ly-14, labelWidth, 18);
+  ctx.fillStyle = '#000';
+  ctx.fillText(label, cx - labelWidth/2 + 6, ly);
+}
+
+function drawHud(people, trackedPeople, faceBoxes, trackedFaces){
+  canvas.width = video.videoWidth || 1280;
+  canvas.height = video.videoHeight || 720;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.font = 'bold 14px ui-monospace, Consolas, monospace';
+
+  trackedPeople.forEach((t,i) => {
+    const p = people[i];
+    const [x,y,w,h] = t.box;
+    const label = (trackingEnabledInput.checked && t.id)
+      ? `PERSON ${t.id} ${Math.round(p.score*100)}%`
+      : `PERSON ${Math.round(p.score*100)}%`;
+    drawBox(x,y,w,h,label,'#00ff6a');
+  });
+
+  trackedFaces.forEach((t,i) => {
+    const f = faceBoxes[i];
+    const [x,y,w,h] = t.box;
+    drawFaceCircle(x,y,w,h,`GESICHT ${Math.round(f.score*100)}%`,'#7dffb0');
+  });
+}
+
+/* ============================================================
+   Aufnahme (mit Live-Timer)
+   ============================================================ */
+let recorder, chunks = [], recording = false, stopTimer = null;
+let recordingStartedAt = 0, recTimerInterval = null;
+
+function startRecording(){
+  if(!stream || recording) return;
+  chunks = [];
+  const mime = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    'video/mp4'
+  ].find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+
+  if(!window.MediaRecorder || !mime){
+    setStatus('Dieser Browser unterstützt keine Videoaufnahme.');
+    return;
+  }
+
+  recorder = new MediaRecorder(stream,{ mimeType: mime });
+  recorder.ondataavailable = e => { if(e.data.size) chunks.push(e.data); };
+  recorder.onstop = saveRecording;
+  recorder.start(500);
+  recording = true;
+  recordingStartedAt = Date.now();
+  recBadge.style.display = 'block';
+  updateRecTimer();
+  recTimerInterval = setInterval(updateRecTimer, 1000);
+  setStatus('Person erkannt – Aufnahme läuft');
+}
+
+function updateRecTimer(){
+  recTimerEl.textContent = formatDuration(Math.floor((Date.now()-recordingStartedAt)/1000));
+}
+
+function stopRecording(){
+  if(!recorder || recorder.state === 'inactive') return;
+  recorder.stop();
+  recording = false;
+  clearInterval(recTimerInterval);
+  recTimerInterval = null;
+  recBadge.style.display = 'none';
+  setStatus('Aufnahme wird vorbereitet…');
+}
+
+async function saveRecording(){
+  const durationSeconds = Math.max(1, Math.round((Date.now()-recordingStartedAt)/1000));
+  const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+  chunks = [];
+
+  const record = {
+    id: `video-${Date.now()}`,
+    blob,
+    mimeType: recorder.mimeType || 'video/webm',
+    timestamp: Date.now(),
+    durationSeconds
   };
-  recorder.start(1000);
-  setStatus('Person erkannt – Aufnahme läuft', 'ok');
-}
 
-function scheduleStopRecording() {
-  if (recordingStopTimer) clearTimeout(recordingStopTimer);
-  recordingStopTimer = setTimeout(() => {
-    if (recorder && recorder.state === 'recording') recorder.stop();
-  }, 2000);
-}
-
-/* ============================================================
-   Gesichtsschnappschüsse
-   ============================================================ */
-
-async function saveFaceSnapshot() {
-  if (!db) return;
-  const blob = await blobFromCanvas();
-  if (!blob) return;
-  try {
-    await dbAdd('faces', { blob, createdAt: Date.now() });
-  } catch (e) {
-    console.warn('Gesichtsschnappschuss konnte nicht gespeichert werden:', e);
+  try{
+    await idbPut(STORE_VIDEOS, record);
+    await renderRecordings();
+    setStatus('Aufnahme gespeichert');
+  }catch(e){
+    console.error('Aufnahme konnte nicht gespeichert werden', e);
+    setStatus('Aufnahme konnte nicht gespeichert werden (Speicher voll?)');
   }
 }
 
 /* ============================================================
-   Galerie
+   Automatische Gesichtsbilder
    ============================================================ */
+async function maybeCaptureFaceSnapshots(faceBoxes, trackedFaces){
+  if(!faceSnapshotsEnabledInput.checked) return;
+  const now = performance.now();
+  const cooldownMs = getFaceCooldownMs();
 
-async function renderGallery() {
-  if (!db) return;
-  recordingsEl.innerHTML = '';
-  facesEl.innerHTML = '';
-  const recordings = await dbGetAll('recordings');
-  const faces = await dbGetAll('faces');
+  for(let i=0;i<trackedFaces.length;i++){
+    const t = trackedFaces[i];
+    const f = faceBoxes[i];
+    const last = faceSnapshotTimes.get(t.id) || 0;
+    if(now - last < cooldownMs) continue;
+    faceSnapshotTimes.set(t.id, now);
+    captureFaceSnapshot(f.bbox).catch(e => console.error('Snapshot fehlgeschlagen', e));
+  }
+}
 
-  if (!recordings.length) recordingsEl.innerHTML = '<p class="empty">Noch keine Aufnahmen.</p>';
-  recordings.reverse().forEach(item => {
-    const wrap = document.createElement('div');
-    wrap.className = 'gallery-item';
-    const videoEl = document.createElement('video');
-    videoEl.controls = true;
-    videoEl.playsInline = true;
-    videoEl.src = URL.createObjectURL(item.blob);
-    const meta = document.createElement('div');
-    meta.textContent = new Date(item.createdAt).toLocaleString();
-    wrap.append(videoEl, meta);
-    recordingsEl.appendChild(wrap);
+async function captureFaceSnapshot(bbox){
+  const frameW = video.videoWidth, frameH = video.videoHeight;
+  if(!frameW || !frameH) return;
+
+  const [x,y,w,h] = bbox;
+  const padX = w*0.35, padY = h*0.45;
+  const sx = Math.max(0, x-padX);
+  const sy = Math.max(0, y-padY);
+  const sw = Math.min(frameW-sx, w+padX*2);
+  const sh = Math.min(frameH-sy, h+padY*2);
+  if(sw <= 0 || sh <= 0) return;
+
+  const off = document.createElement('canvas');
+  off.width = sw; off.height = sh;
+  off.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  const blob = await new Promise(resolve => off.toBlob(resolve, 'image/jpeg', 0.85));
+  if(!blob) return;
+
+  const record = { id:`face-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, blob, timestamp: Date.now() };
+  await idbPut(STORE_FACES, record);
+  await renderFaces();
+}
+
+/* ============================================================
+   Galerien (Aufnahmen + Gesichter) – aus IndexedDB gerendert
+   ============================================================ */
+const videoObjectUrls = new Map();
+const faceObjectUrls = new Map();
+function revokeAll(map){ map.forEach(url => URL.revokeObjectURL(url)); map.clear(); }
+
+async function renderRecordings(){
+  let records = [];
+  try{ records = await idbGetAll(STORE_VIDEOS); }
+  catch(e){ console.error('Aufnahmen konnten nicht geladen werden', e); }
+  records.sort((a,b) => b.timestamp - a.timestamp);
+
+  revokeAll(videoObjectUrls);
+  recordingsList.innerHTML = '';
+  recordingsEmpty.hidden = records.length > 0;
+
+  for(const rec of records){
+    try{
+      const url = URL.createObjectURL(rec.blob);
+      videoObjectUrls.set(rec.id, url);
+
+      const item = document.createElement('div');
+      item.className = 'rec-item';
+
+      const vid = document.createElement('video');
+      vid.src = url; vid.controls = true; vid.playsInline = true;
+
+      const meta = document.createElement('div');
+      meta.className = 'rec-item-meta';
+      meta.textContent = `${new Date(rec.timestamp).toLocaleString('de-DE')} – ${formatDuration(rec.durationSeconds||0)}`;
+
+      const actions = document.createElement('div');
+      actions.className = 'rec-item-actions';
+
+      const ext = (rec.mimeType||'').includes('mp4') ? 'mp4' : 'webm';
+      const dl = document.createElement('a');
+      dl.href = url;
+      dl.download = `personcam-${formatFilenameStamp(rec.timestamp)}.${ext}`;
+      dl.textContent = 'Herunterladen';
+
+      const del = document.createElement('button');
+      del.textContent = 'Löschen';
+      del.addEventListener('click', async () => { await idbDelete(STORE_VIDEOS, rec.id); await renderRecordings(); });
+
+      actions.append(dl, del);
+      item.append(vid, meta, actions);
+      recordingsList.append(item);
+    }catch(e){ console.error('Aufnahme-Eintrag übersprungen (beschädigt)', e); }
+  }
+}
+
+async function renderFaces(){
+  let records = [];
+  try{ records = await idbGetAll(STORE_FACES); }
+  catch(e){ console.error('Gesichtsbilder konnten nicht geladen werden', e); }
+  records.sort((a,b) => b.timestamp - a.timestamp);
+
+  revokeAll(faceObjectUrls);
+  faceGallery.innerHTML = '';
+  facesEmpty.hidden = records.length > 0;
+
+  for(const rec of records){
+    try{
+      const url = URL.createObjectURL(rec.blob);
+      faceObjectUrls.set(rec.id, url);
+
+      const card = document.createElement('div');
+      card.className = 'face-card';
+
+      const img = document.createElement('img');
+      img.src = url; img.alt = 'Erfasstes Gesicht'; img.loading = 'lazy';
+
+      const time = document.createElement('time');
+      time.textContent = new Date(rec.timestamp).toLocaleString('de-DE',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+
+      card.append(img, time);
+      card.addEventListener('click', () => openLightbox(rec.id, url, rec.timestamp));
+      faceGallery.append(card);
+    }catch(e){ console.error('Gesichtsbild-Eintrag übersprungen (beschädigt)', e); }
+  }
+}
+
+clearVideosBtn.addEventListener('click', async () => {
+  if(!confirm('Wirklich alle Aufnahmen löschen?')) return;
+  await idbClear(STORE_VIDEOS);
+  await renderRecordings();
+});
+clearFacesBtn.addEventListener('click', async () => {
+  if(!confirm('Wirklich alle Gesichtsbilder löschen?')) return;
+  await idbClear(STORE_FACES);
+  await renderFaces();
+});
+
+/* ============================================================
+   Lightbox
+   ============================================================ */
+let lightboxFaceId = null;
+function openLightbox(id, url, timestamp){
+  lightboxFaceId = id;
+  lightboxImg.src = url;
+  lightboxDownload.href = url;
+  lightboxDownload.download = `personcam-face-${formatFilenameStamp(timestamp)}.jpg`;
+  lightbox.hidden = false;
+}
+function closeLightboxFn(){ lightbox.hidden = true; lightboxFaceId = null; }
+closeLightboxBtn.addEventListener('click', closeLightboxFn);
+lightbox.addEventListener('click', e => { if(e.target === lightbox) closeLightboxFn(); });
+lightboxDelete.addEventListener('click', async () => {
+  if(!lightboxFaceId) return;
+  await idbDelete(STORE_FACES, lightboxFaceId);
+  closeLightboxFn();
+  await renderFaces();
+});
+
+/* ============================================================
+   Einstellungs-Sheet + Tabs
+   ============================================================ */
+function closeSettingsSheet(){ settingsOverlay.hidden = true; }
+settingsBtn.addEventListener('click', () => { settingsOverlay.hidden = false; });
+closeSettingsBtn.addEventListener('click', closeSettingsSheet);
+settingsOverlay.addEventListener('click', e => { if(e.target === settingsOverlay) closeSettingsSheet(); });
+
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    tabBtns.forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected','true');
+    const tab = btn.dataset.tab;
+    recordingsPanel.hidden = tab !== 'recordings';
+    facesPanel.hidden = tab !== 'faces';
   });
-
-  if (!faces.length) facesEl.innerHTML = '<p class="empty">Noch keine Gesichtsschnappschüsse.</p>';
-  faces.reverse().forEach(item => {
-    const wrap = document.createElement('div');
-    wrap.className = 'gallery-item';
-    const img = document.createElement('img');
-    img.alt = 'Gesichtsschnappschuss';
-    img.src = URL.createObjectURL(item.blob);
-    const meta = document.createElement('div');
-    meta.textContent = new Date(item.createdAt).toLocaleString();
-    wrap.append(img, meta);
-    facesEl.appendChild(wrap);
-  });
-}
+});
 
 /* ============================================================
-   Einstellungen
+   Start
    ============================================================ */
+startBtn.addEventListener('click', startCamera);
+stopBtn.addEventListener('click', stopCamera);
+window.addEventListener('beforeunload', () => stream?.getTracks().forEach(t=>t.stop()));
 
-function loadSettings() {
-  try {
-    const saved = JSON.parse(localStorage.getItem('personcam_settings') || '{}');
-    settings = { ...settings, ...saved };
-  } catch (_) {}
-  sensitivityRange.value = settings.sensitivity;
-  sensitivityValue.textContent = Number(settings.sensitivity).toFixed(2);
-  autoRecordToggle.checked = !!settings.autoRecord;
-  snapshotsToggle.checked = !!settings.snapshots;
-  mirrorToggle.checked = !!settings.mirror;
-  applyMirror();
-}
-
-function saveSettings() {
-  localStorage.setItem('personcam_settings', JSON.stringify(settings));
-}
-
-function applyMirror() {
-  video.style.transform = settings.mirror ? 'scaleX(-1)' : '';
-}
-
-function initAfterUnlock() {
-  if (!db) {
-    openDB().then(database => {
-      db = database;
-      listCameras();
-    }).catch(e => console.warn('IndexedDB konnte nicht geöffnet werden:', e));
-  } else {
-    listCameras();
-  }
+(async function init(){
   loadSettings();
-}
-
-/* ============================================================
-   Events / Start
-   ============================================================ */
-
-startBtn?.addEventListener('click', startCamera);
-stopBtn?.addEventListener('click', stopCamera);
-pinBtn?.addEventListener('click', unlock);
-pinInput?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') unlock();
-});
-settingsBtn?.addEventListener('click', () => settingsPanel.classList.remove('hidden'));
-galleryBtn?.addEventListener('click', async () => {
-  galleryPanel.classList.remove('hidden');
-  await renderGallery();
-});
-closeSettingsBtn?.addEventListener('click', () => settingsPanel.classList.add('hidden'));
-closeGalleryBtn?.addEventListener('click', () => galleryPanel.classList.add('hidden'));
-clearRecordingsBtn?.addEventListener('click', async () => {
-  if (!confirm('Alle Aufnahmen löschen?')) return;
-  await dbClear('recordings');
-  await renderGallery();
-});
-clearFacesBtn?.addEventListener('click', async () => {
-  if (!confirm('Alle Gesichtsschnappschüsse löschen?')) return;
-  await dbClear('faces');
-  await renderGallery();
-});
-pinChangeBtn?.addEventListener('click', changePin);
-sensitivityRange?.addEventListener('input', () => {
-  settings.sensitivity = Number(sensitivityRange.value);
-  sensitivityValue.textContent = settings.sensitivity.toFixed(2);
-  saveSettings();
-});
-autoRecordToggle?.addEventListener('change', () => {
-  settings.autoRecord = autoRecordToggle.checked;
-  saveSettings();
-});
-snapshotsToggle?.addEventListener('change', () => {
-  settings.snapshots = snapshotsToggle.checked;
-  saveSettings();
-});
-mirrorToggle?.addEventListener('change', () => {
-  settings.mirror = mirrorToggle.checked;
-  applyMirror();
-  saveSettings();
-});
-
-video?.addEventListener('loadedmetadata', resizeOverlay);
-window.addEventListener('resize', resizeOverlay);
-window.addEventListener('beforeunload', () => {
-  if (stream) stream.getTracks().forEach(track => track.stop());
-});
-
-(async function boot() {
-  loadSettings();
-  try {
-    db = await openDB();
-  } catch (e) {
-    console.warn('IndexedDB konnte nicht geöffnet werden:', e);
+  pinInput.disabled = true;
+  pinSubmit.disabled = true;
+  pinSubmit.textContent = 'Wird vorbereitet…';
+  try{
+    await ensurePinProvisioned();
+    pinSubmit.textContent = 'Entsperren';
+  }catch(e){
+    console.error('PIN konnte nicht initialisiert werden', e);
+    pinError.textContent = 'Sicherheitsfunktion (Web Crypto) nicht verfügbar – bitte über HTTPS oder localhost öffnen.';
+    pinError.hidden = false;
+    pinSubmit.textContent = 'Entsperren';
   }
-
-  if (localStorage.getItem('personcam_unlocked') === '1') {
-    pinGate.classList.add('hidden');
-    appEl.classList.remove('hidden');
-    initAfterUnlock();
-  } else {
-    pinInput?.focus();
-  }
+  pinInput.disabled = false;
+  pinSubmit.disabled = false;
+  pinInput.focus();
 })();
