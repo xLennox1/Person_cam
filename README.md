@@ -112,3 +112,13 @@ Getestet wurde der Code auf Syntax-Korrektheit; ein echter Test mit Kamera,
 IndexedDB und PIN-Verschlüsselung im Browser (insbesondere Safari/iOS) konnte
 in dieser Umgebung nicht durchgeführt werden – bitte nach dem Hochladen einmal
 lokal durchklicken.
+
+### Bekannter Fix
+"Erkennungsmodelle konnten nicht geladen werden": Die BlazeFace-Script-URL
+zeigte auf einen falschen Datei-Pfad innerhalb des npm-Pakets und lud daher
+ins Leere. Behoben, indem jsDelivr die Datei über die reine Paket-URL (ohne
+geratenen `/dist/...`-Pfad) selbst auflösen lässt.
+
+Erkannte Gesichter bekommen jetzt statt eines Rechtecks einen animierten,
+leicht pulsierenden Scan-Ring mit vier kurzen Fadenkreuz-Ticks (Funktion
+`drawFaceCircle` in `app.js`).
