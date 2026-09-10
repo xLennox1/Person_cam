@@ -137,6 +137,8 @@ h1{font-size:20px;margin:8px 0;letter-spacing:.2px}
   background:var(--surface-2);color:var(--green);font-family:var(--mono);
 }
 .pin-error{color:var(--red);font-size:13px;margin:12px 0 0}
+.pin-hint{color:var(--text-dim);font-size:12.5px;margin:14px 0 0;line-height:1.4}
+.pin-hint strong{color:var(--green-dim);font-weight:700;letter-spacing:1px}
 .pin-submit{width:100%;margin-top:18px}
 
 /* Settings Bottom-Sheet */
