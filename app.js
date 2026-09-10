@@ -346,7 +346,7 @@ function stopCamera() {
 
 /* ============================================================
    KI-Modelle / Erkennung
-   ============================================================ */
+   ============================================================
 
 async function loadModels() {
   const [coco, face] = await Promise.all([
@@ -422,7 +422,8 @@ async function detectLoop() {
     consecutiveErrors++;
     console.warn('Erkennung fehlgeschlagen:', e);
     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      setStatus('Erkennung vorübergehend gestoppt', 'warn');
+      setStatus('Erkennung pausiert – Kamera läuft weiter', 'warn');
+      consecutiveErrors = 0;
     }
   } finally {
     detecting = false;
@@ -431,14 +432,14 @@ async function detectLoop() {
 }
 
 /* ============================================================
-   Aufnahme
+   Recording
    ============================================================ */
 
 function startRecording() {
-  if (!stream || !window.MediaRecorder || (recorder && recorder.state !== 'inactive')) return;
-  const mimeType = pickRecorderMime();
+  if (!stream || recorder?.state === 'recording') return;
+  const mime = pickRecorderMime();
   try {
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
   } catch (e) {
     console.warn('MediaRecorder nicht verfügbar:', e);
     return;
@@ -446,53 +447,48 @@ function startRecording() {
   recordingChunks = [];
   recordingStartedAt = Date.now();
   recorder.ondataavailable = e => {
-    if (e.data && e.data.size) recordingChunks.push(e.data);
+    if (e.data?.size) recordingChunks.push(e.data);
   };
-  recorder.onstop = saveRecording;
-  recorder.start(500);
-  setStatus('Aufnahme läuft', 'recording');
+  recorder.onstop = async () => {
+    if (!recordingChunks.length) return;
+    const type = recorder?.mimeType || mime || 'video/webm';
+    const blob = new Blob(recordingChunks, { type });
+    try {
+      await dbAdd('recordings', {
+        blob,
+        type,
+        createdAt: Date.now(),
+        duration: Date.now() - recordingStartedAt
+      });
+      setStatus('Aufnahme gespeichert', 'ok');
+    } catch (e) {
+      console.warn('Aufnahme konnte nicht gespeichert werden:', e);
+    }
+    recordingChunks = [];
+  };
+  recorder.start(1000);
+  setStatus('Person erkannt – Aufnahme läuft', 'ok');
 }
 
 function scheduleStopRecording() {
-  if (!recorder || recorder.state === 'inactive') return;
   if (recordingStopTimer) clearTimeout(recordingStopTimer);
   recordingStopTimer = setTimeout(() => {
-    if (recorder && recorder.state !== 'inactive') recorder.stop();
-  }, 1500);
+    if (recorder && recorder.state === 'recording') recorder.stop();
+  }, 2000);
 }
 
-async function saveRecording() {
-  if (!recordingChunks.length) return;
-  const mime = recorder?.mimeType || 'video/webm';
-  const blob = new Blob(recordingChunks, { type: mime });
-  try {
-    await dbAdd('recordings', {
-      createdAt: Date.now(),
-      duration: Date.now() - recordingStartedAt,
-      type: mime,
-      blob
-    });
-  } catch (e) {
-    console.error('Aufnahme konnte nicht gespeichert werden:', e);
-  }
-  if (running) setStatus('Bereit – Personen werden erkannt', 'ok');
-}
+/* ============================================================
+   Gesichtsschnappschüsse
+   ============================================================ */
 
 async function saveFaceSnapshot() {
+  if (!db) return;
+  const blob = await blobFromCanvas();
+  if (!blob) return;
   try {
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || overlay.width;
-    canvas.height = video.videoHeight || overlay.height;
-    const c = canvas.getContext('2d');
-    if (settings.mirror) {
-      c.translate(canvas.width, 0);
-      c.scale(-1, 1);
-    }
-    c.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
-    if (blob) await dbAdd('faces', { createdAt: Date.now(), blob });
+    await dbAdd('faces', { blob, createdAt: Date.now() });
   } catch (e) {
-    console.warn('Face-Snapshot fehlgeschlagen:', e);
+    console.warn('Gesichtsschnappschuss konnte nicht gespeichert werden:', e);
   }
 }
 
@@ -500,40 +496,37 @@ async function saveFaceSnapshot() {
    Galerie
    ============================================================ */
 
-function formatDate(ts) {
-  return new Date(ts).toLocaleString('de-DE');
-}
-
 async function renderGallery() {
-  const recordings = await dbGetAll('recordings');
-  const faces = await dbGetAll('faces');
+  if (!db) return;
   recordingsEl.innerHTML = '';
   facesEl.innerHTML = '';
+  const recordings = await dbGetAll('recordings');
+  const faces = await dbGetAll('faces');
 
-  if (!recordings.length) recordingsEl.innerHTML = '<p class="empty">Keine Aufnahmen vorhanden.</p>';
-  recordings.sort((a, b) => b.createdAt - a.createdAt).forEach(item => {
+  if (!recordings.length) recordingsEl.innerHTML = '<p class="empty">Noch keine Aufnahmen.</p>';
+  recordings.reverse().forEach(item => {
     const wrap = document.createElement('div');
     wrap.className = 'gallery-item';
     const videoEl = document.createElement('video');
     videoEl.controls = true;
     videoEl.playsInline = true;
     videoEl.src = URL.createObjectURL(item.blob);
-    const info = document.createElement('div');
-    info.textContent = formatDate(item.createdAt);
-    wrap.append(videoEl, info);
+    const meta = document.createElement('div');
+    meta.textContent = new Date(item.createdAt).toLocaleString();
+    wrap.append(videoEl, meta);
     recordingsEl.appendChild(wrap);
   });
 
-  if (!faces.length) facesEl.innerHTML = '<p class="empty">Keine Gesicht-Snapshots vorhanden.</p>';
-  faces.sort((a, b) => b.createdAt - a.createdAt).forEach(item => {
+  if (!faces.length) facesEl.innerHTML = '<p class="empty">Noch keine Gesichtsschnappschüsse.</p>';
+  faces.reverse().forEach(item => {
     const wrap = document.createElement('div');
     wrap.className = 'gallery-item';
     const img = document.createElement('img');
+    img.alt = 'Gesichtsschnappschuss';
     img.src = URL.createObjectURL(item.blob);
-    img.alt = 'Gesicht-Snapshot';
-    const info = document.createElement('div');
-    info.textContent = formatDate(item.createdAt);
-    wrap.append(img, info);
+    const meta = document.createElement('div');
+    meta.textContent = new Date(item.createdAt).toLocaleString();
+    wrap.append(img, meta);
     facesEl.appendChild(wrap);
   });
 }
@@ -544,84 +537,103 @@ async function renderGallery() {
 
 function loadSettings() {
   try {
-    const stored = JSON.parse(localStorage.getItem('personcam_settings') || '{}');
-    settings = { ...settings, ...stored };
-  } catch {}
+    const saved = JSON.parse(localStorage.getItem('personcam_settings') || '{}');
+    settings = { ...settings, ...saved };
+  } catch (_) {}
   sensitivityRange.value = settings.sensitivity;
   sensitivityValue.textContent = Number(settings.sensitivity).toFixed(2);
   autoRecordToggle.checked = !!settings.autoRecord;
   snapshotsToggle.checked = !!settings.snapshots;
   mirrorToggle.checked = !!settings.mirror;
-  video.style.transform = settings.mirror ? 'scaleX(-1)' : '';
+  applyMirror();
 }
 
 function saveSettings() {
-  settings.sensitivity = Number(sensitivityRange.value);
-  settings.autoRecord = autoRecordToggle.checked;
-  settings.snapshots = snapshotsToggle.checked;
-  settings.mirror = mirrorToggle.checked;
-  sensitivityValue.textContent = settings.sensitivity.toFixed(2);
-  video.style.transform = settings.mirror ? 'scaleX(-1)' : '';
   localStorage.setItem('personcam_settings', JSON.stringify(settings));
 }
 
+function applyMirror() {
+  video.style.transform = settings.mirror ? 'scaleX(-1)' : '';
+}
+
 function initAfterUnlock() {
+  if (!db) {
+    openDB().then(database => {
+      db = database;
+      listCameras();
+    }).catch(e => console.warn('IndexedDB konnte nicht geöffnet werden:', e));
+  } else {
+    listCameras();
+  }
   loadSettings();
-  openDB().then(database => { db = database; }).catch(console.error);
-  listCameras();
 }
 
 /* ============================================================
-   Events
+   Events / Start
    ============================================================ */
 
-startBtn.addEventListener('click', startCamera);
-stopBtn.addEventListener('click', stopCamera);
-pinBtn.addEventListener('click', unlock);
-pinInput.addEventListener('keydown', e => { if (e.key === 'Enter') unlock(); });
-settingsBtn.addEventListener('click', () => settingsPanel.classList.remove('hidden'));
-closeSettingsBtn.addEventListener('click', () => settingsPanel.classList.add('hidden'));
-galleryBtn.addEventListener('click', async () => {
+startBtn?.addEventListener('click', startCamera);
+stopBtn?.addEventListener('click', stopCamera);
+pinBtn?.addEventListener('click', unlock);
+pinInput?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') unlock();
+});
+settingsBtn?.addEventListener('click', () => settingsPanel.classList.remove('hidden'));
+galleryBtn?.addEventListener('click', async () => {
   galleryPanel.classList.remove('hidden');
   await renderGallery();
 });
-closeGalleryBtn.addEventListener('click', () => galleryPanel.classList.add('hidden'));
-clearRecordingsBtn.addEventListener('click', async () => {
-  if (confirm('Alle Aufnahmen löschen?')) {
-    await dbClear('recordings');
-    renderGallery();
-  }
+closeSettingsBtn?.addEventListener('click', () => settingsPanel.classList.add('hidden'));
+closeGalleryBtn?.addEventListener('click', () => galleryPanel.classList.add('hidden'));
+clearRecordingsBtn?.addEventListener('click', async () => {
+  if (!confirm('Alle Aufnahmen löschen?')) return;
+  await dbClear('recordings');
+  await renderGallery();
 });
-clearFacesBtn.addEventListener('click', async () => {
-  if (confirm('Alle Gesicht-Snapshots löschen?')) {
-    await dbClear('faces');
-    renderGallery();
-  }
+clearFacesBtn?.addEventListener('click', async () => {
+  if (!confirm('Alle Gesichtsschnappschüsse löschen?')) return;
+  await dbClear('faces');
+  await renderGallery();
 });
-pinChangeBtn.addEventListener('click', changePin);
-sensitivityRange.addEventListener('input', saveSettings);
-autoRecordToggle.addEventListener('change', saveSettings);
-snapshotsToggle.addEventListener('change', saveSettings);
-mirrorToggle.addEventListener('change', saveSettings);
-cameraSelect?.addEventListener('change', async () => {
-  if (running) {
-    stopCamera();
-    await startCamera();
-  }
+pinChangeBtn?.addEventListener('click', changePin);
+sensitivityRange?.addEventListener('input', () => {
+  settings.sensitivity = Number(sensitivityRange.value);
+  sensitivityValue.textContent = settings.sensitivity.toFixed(2);
+  saveSettings();
 });
-video.addEventListener('loadedmetadata', resizeOverlay);
+autoRecordToggle?.addEventListener('change', () => {
+  settings.autoRecord = autoRecordToggle.checked;
+  saveSettings();
+});
+snapshotsToggle?.addEventListener('change', () => {
+  settings.snapshots = snapshotsToggle.checked;
+  saveSettings();
+});
+mirrorToggle?.addEventListener('change', () => {
+  settings.mirror = mirrorToggle.checked;
+  applyMirror();
+  saveSettings();
+});
+
+video?.addEventListener('loadedmetadata', resizeOverlay);
 window.addEventListener('resize', resizeOverlay);
+window.addEventListener('beforeunload', () => {
+  if (stream) stream.getTracks().forEach(track => track.stop());
+});
 
-/* ============================================================
-   Startzustand
-   ============================================================ */
+(async function boot() {
+  loadSettings();
+  try {
+    db = await openDB();
+  } catch (e) {
+    console.warn('IndexedDB konnte nicht geöffnet werden:', e);
+  }
 
-(function boot() {
-  appEl.classList.add('hidden');
-  pinGate.classList.remove('hidden');
-  pinInput.focus();
   if (localStorage.getItem('personcam_unlocked') === '1') {
-    // PIN bleibt beim erneuten Laden erforderlich.
-    localStorage.removeItem('personcam_unlocked');
+    pinGate.classList.add('hidden');
+    appEl.classList.remove('hidden');
+    initAfterUnlock();
+  } else {
+    pinInput?.focus();
   }
 })();
