@@ -3,49 +3,168 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#111">
+  <meta name="theme-color" content="#0a0f0c">
   <title>PersonCam</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <header>
-      <h1>PersonCam</h1>
-      <span id="status">Bereit</span>
-    </header>
 
-    <section class="viewer">
-      <video id="preview" autoplay muted playsinline></video>
-      <canvas id="overlay"></canvas>
-      <div id="recBadge">● REC</div>
-    </section>
+  <!-- PIN-Sperrbildschirm -->
+  <div id="pinScreen" class="pin-screen">
+    <div class="pin-box">
+      <p class="pin-brand">PERSONCAM</p>
+      <h1>PIN eingeben</h1>
+      <input id="pinInput" class="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12" aria-label="PIN">
+      <p id="pinError" class="pin-error" hidden>Falsche PIN.</p>
+      <button id="pinSubmit" class="btn btn-primary pin-submit">Entsperren</button>
+    </div>
+  </div>
 
-    <section class="controls">
-      <button id="start">Kamera starten</button>
-      <button id="stop" disabled>Stoppen</button>
-      <label>
-        Nachlauf (Sekunden)
-        <input id="grace" type="number" min="1" max="30" value="4">
-      </label>
-      <label title="Wie sicher sich die KI sein muss, bevor eine Person zählt">
-        Empfindlichkeit (%)
-        <input id="sensitivity" type="number" min="30" max="90" step="5" value="55">
-      </label>
-    </section>
+  <!-- Hauptanwendung -->
+  <div id="app" class="app" hidden>
+    <main>
+      <header>
+        <h1>PersonCam</h1>
+        <div class="header-actions">
+          <button id="settingsBtn" class="btn btn-ghost">Einstellungen</button>
+          <button id="lockBtn" class="btn btn-ghost">Sperren</button>
+        </div>
+      </header>
+      <span id="status" class="status">Bereit</span>
 
-    <section>
-      <h2>Aufnahmen</h2>
-      <div id="recordings"></div>
-    </section>
+      <section class="viewer">
+        <video id="preview" autoplay muted playsinline></video>
+        <canvas id="overlay"></canvas>
+        <div id="recBadge" class="rec-badge">● REC <span id="recTimer">00:00</span></div>
+      </section>
 
-    <p class="note">
-      Die Kamera und Erkennung laufen lokal im Browser. Videos werden erst durch
-      dein ausdrückliches Speichern als Datei dauerhaft abgelegt.
-    </p>
-  </main>
+      <section class="controls">
+        <button id="start" class="btn btn-primary">Kamera starten</button>
+        <button id="stop" class="btn btn-ghost" disabled>Stoppen</button>
+      </section>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn active" data-tab="recordings" role="tab" aria-selected="true">Aufnahmen</button>
+        <button class="tab-btn" data-tab="faces" role="tab" aria-selected="false">Gesichter</button>
+      </nav>
+
+      <section id="recordingsPanel" class="tab-panel" role="tabpanel">
+        <div class="panel-head">
+          <p class="panel-hint">Lokal auf diesem Gerät gespeichert.</p>
+          <button id="clearVideos" class="btn-link">Alle löschen</button>
+        </div>
+        <div id="recordings" class="grid-list"></div>
+        <p id="recordingsEmpty" class="empty-hint">Noch keine Aufnahmen. Sobald PersonCam eine Person erkennt, erscheint hier die Aufnahme.</p>
+      </section>
+
+      <section id="facesPanel" class="tab-panel" hidden role="tabpanel">
+        <div class="panel-head">
+          <p class="panel-hint">Automatische Schnappschüsse erkannter Gesichter.</p>
+          <button id="clearFaces" class="btn-link">Alle löschen</button>
+        </div>
+        <div id="faceGallery" class="face-grid"></div>
+        <p id="facesEmpty" class="empty-hint">Noch keine Gesichtsbilder erfasst.</p>
+      </section>
+
+      <p class="note">
+        Kamera-, Personen- und Gesichtserkennung laufen lokal auf diesem Gerät.
+        Aufnahmen und Gesichtsbilder werden nur lokal gespeichert und nicht
+        automatisch an einen Server übertragen.
+      </p>
+    </main>
+
+    <!-- Einstellungen (Bottom-Sheet) -->
+    <div id="settingsOverlay" class="sheet-overlay" hidden>
+      <div class="sheet" role="dialog" aria-label="Einstellungen">
+        <div class="sheet-head">
+          <h2>Einstellungen</h2>
+          <button id="closeSettings" class="btn-link">Fertig</button>
+        </div>
+
+        <div class="sheet-body">
+          <section class="setting-group">
+            <h3>Aufnahme</h3>
+            <label class="field">
+              <span>Nachlauf nach letzter Erkennung (Sekunden)</span>
+              <input id="grace" type="number" min="1" max="30" value="4">
+            </label>
+          </section>
+
+          <section class="setting-group">
+            <h3>Personen</h3>
+            <label class="field">
+              <span>Empfindlichkeit der Erkennung (%)</span>
+              <input id="sensitivity" type="number" min="30" max="90" step="5" value="55">
+            </label>
+            <label class="field field-row">
+              <span>Personen im Bild nummerieren</span>
+              <input id="trackingEnabled" type="checkbox" checked>
+            </label>
+          </section>
+
+          <section class="setting-group">
+            <h3>Gesichtsbilder</h3>
+            <label class="field field-row">
+              <span>Automatische Gesichtsbilder</span>
+              <input id="faceSnapshotsEnabled" type="checkbox" checked>
+            </label>
+            <label class="field">
+              <span>Mindest-Konfidenz (%)</span>
+              <input id="faceMinConfidence" type="number" min="30" max="99" step="5" value="70">
+            </label>
+            <label class="field">
+              <span>Abstand zwischen Schnappschüssen (Sekunden)</span>
+              <input id="faceCooldown" type="number" min="1" max="60" value="5">
+            </label>
+          </section>
+
+          <section class="setting-group">
+            <h3>Sicherheit</h3>
+            <button id="changePinBtn" class="btn btn-ghost btn-block">PIN ändern</button>
+
+            <div id="changePinForm" class="pin-change-form" hidden>
+              <label class="field">
+                <span>Aktuelle PIN</span>
+                <input id="currentPin" type="password" inputmode="numeric" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Neue PIN</span>
+                <input id="newPin" type="password" inputmode="numeric" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>Neue PIN bestätigen</span>
+                <input id="newPin2" type="password" inputmode="numeric" autocomplete="off">
+              </label>
+              <p id="pinChangeMsg" class="pin-error" hidden></p>
+              <button id="savePinBtn" class="btn btn-primary btn-block">PIN speichern</button>
+            </div>
+
+            <button id="lockNowBtn" class="btn btn-ghost btn-block">Jetzt sperren</button>
+          </section>
+
+          <p class="note">
+            Diese Funktionen (Personen-Zählung, Gesichtsbilder) verwenden keine
+            biometrische Gesichtserkennung und erstellen keine dauerhaften
+            Personenprofile – jede Kamerasitzung beginnt neu.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lightbox für Gesichtsbilder -->
+    <div id="lightbox" class="lightbox" hidden>
+      <button id="closeLightbox" class="lightbox-close">Schließen</button>
+      <img id="lightboxImg" alt="Gesichtsbild">
+      <div class="lightbox-actions">
+        <a id="lightboxDownload" class="btn btn-ghost" download>Herunterladen</a>
+        <button id="lightboxDelete" class="btn btn-ghost">Löschen</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.1.0/dist/blazeface.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
