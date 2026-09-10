@@ -56,14 +56,16 @@ const closeLightboxBtn  = document.getElementById('closeLightbox');
 /* ============================================================
    Konfiguration
    ============================================================ */
-const MODEL_BASE = 'mobilenet_v2';     // genaueres COCO-SSD-Modell
-const DETECT_INTERVAL_MS = 300;        // ca. 3 Erkennungen/Sek.
-const CONFIRM_HITS = 2;                // Bestätigungs-Frames vor Aufnahmestart
-const MIN_BOX_HEIGHT_RATIO = 0.04;     // sehr kleine Personen-Boxen ignorieren
+// Das kleinere Modell ist laut TensorFlow für Browser/mobile Nutzung
+// schneller und wird deshalb bewusst statt mobilenet_v2 verwendet.
+const MODEL_BASE = 'lite_mobilenet_v2';
+const DETECT_INTERVAL_MS = 300;
+const CONFIRM_HITS = 2;
+const MIN_BOX_HEIGHT_RATIO = 0.04;
 const MAX_CONSECUTIVE_ERRORS = 5;
 
-const TRACK_TIMEOUT_MS = 2000;         // Ephemere ID "vergessen" nach 2s ohne Sichtkontakt
-const TRACK_MATCH_DIST = 0.25;         // normalisierter Abstand für "gleiche Spur"
+const TRACK_TIMEOUT_MS = 2000;
+const TRACK_MATCH_DIST = 0.25;
 
 const DB_NAME = 'personcam-db';
 const DB_VERSION = 1;
@@ -318,10 +320,6 @@ savePinBtn.addEventListener('click', async () => {
 
 /* ============================================================
    Ephemere Nachverfolgung (NICHT biometrisch)
-   Ordnet Boxen nur innerhalb einer laufenden Kamerasitzung anhand
-   von Position/Größe eine fortlaufende Nummer zu. Es wird kein
-   Gesicht "wiedererkannt" und keine Identität gespeichert – nach
-   Stop/Start oder 2s außer Sicht beginnt die Zählung neu.
    ============================================================ */
 function createTracker(){
   let nextId = 1;
@@ -371,19 +369,47 @@ let lastVideoTime = -1, lastDetectAt = 0, detecting = false;
 let personStreak = 0, consecutiveErrors = 0;
 const faceSnapshotTimes = new Map();
 
+function getModelErrorMessage(error){
+  const text = error?.message || String(error || 'Unbekannter Fehler');
+  if(/failed to fetch|network|load|404|cors|internet/i.test(text)){
+    return 'KI-Modelle konnten nicht aus dem Internet geladen werden. Bitte Internetverbindung prüfen und erneut versuchen.';
+  }
+  if(/webgl|shader|texture|backend/i.test(text)){
+    return 'Die KI konnte die Grafikbeschleunigung dieses Geräts nicht verwenden. Es wird ein langsamer Ersatzmodus versucht.';
+  }
+  return `KI-Modelle konnten nicht geladen werden: ${text}`;
+}
+
+async function prepareTensorFlow(){
+  if(typeof tf === 'undefined') throw new Error('TensorFlow.js wurde nicht geladen.');
+
+  // WebGL ist auf Mobilgeräten normalerweise am schnellsten. Wenn WebGL
+  // nicht verfügbar ist, fällt TensorFlow.js auf CPU zurück.
+  try{
+    if(tf.getBackend() !== 'webgl') await tf.setBackend('webgl');
+    await tf.ready();
+  }catch(webglError){
+    console.warn('WebGL-Backend nicht verfügbar, verwende CPU:', webglError);
+    await tf.setBackend('cpu');
+    await tf.ready();
+  }
+}
+
 async function loadModels(){
-  const [coco, face] = await Promise.all([
-    cocoModel || cocoSsd.load({ base: MODEL_BASE }),
-    faceModel || blazeface.load()
-  ]);
-  cocoModel = coco;
-  faceModel = face;
+  await prepareTensorFlow();
+
+  // Nicht beide großen Modelle gleichzeitig initialisieren: besonders auf
+  // iPhone/iPad kann das sonst zu einem Speicherfehler führen.
+  if(!cocoModel) cocoModel = await cocoSsd.load({ base: MODEL_BASE });
+  if(!faceModel) faceModel = await blazeface.load();
 }
 
 async function startCamera(){
   if(running) return;
 
   try{
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Kamera-API ist in diesem Browser nicht verfügbar.');
+
     stream = await navigator.mediaDevices.getUserMedia({
       video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
       audio:true
@@ -394,6 +420,8 @@ async function startCamera(){
     if(e.name === 'NotFoundError') msg = 'Keine Kamera gefunden.';
     else if(e.name === 'NotReadableError') msg = 'Die Kamera wird bereits von einer anderen App verwendet.';
     else if(e.name === 'NotAllowedError') msg = 'Kamera-/Mikrofonzugriff wurde verweigert.';
+    else if(e.name === 'SecurityError') msg = 'Kamera darf auf dieser Seite nicht verwendet werden. Bitte HTTPS verwenden.';
+    else if(e.message) msg = e.message;
     setStatus('Kamera konnte nicht gestartet werden');
     alert(msg);
     return;
@@ -414,10 +442,10 @@ async function startCamera(){
     personTracker.reset();
     faceTracker.reset();
     faceSnapshotTimes.clear();
-    setStatus('Bereit – Personen werden erkannt');
+    setStatus(`Bereit – Personen werden erkannt (${MODEL_BASE})`);
     detectLoop();
   }catch(e){
-    console.error(e);
+    console.error('KI-Modelle konnten nicht geladen werden:', e);
     running = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -425,7 +453,7 @@ async function startCamera(){
     stream = null;
     video.srcObject = null;
     setStatus('KI-Modelle konnten nicht geladen werden');
-    alert('Die Erkennungsmodelle konnten nicht geladen werden. Bitte Internetverbindung prüfen und erneut versuchen.');
+    alert(getModelErrorMessage(e));
   }
 }
 
@@ -618,7 +646,7 @@ async function saveRecording(){
     id: `video-${Date.now()}`,
     blob,
     mimeType: recorder.mimeType || 'video/webm',
-    timestamp: Date.now(),
+    createdAt: Date.now(),
     durationSeconds
   };
 
@@ -627,202 +655,158 @@ async function saveRecording(){
     await renderRecordings();
     setStatus('Aufnahme gespeichert');
   }catch(e){
-    console.error('Aufnahme konnte nicht gespeichert werden', e);
-    setStatus('Aufnahme konnte nicht gespeichert werden (Speicher voll?)');
+    console.error('Aufnahme konnte nicht gespeichert werden:', e);
+    setStatus('Aufnahme konnte nicht gespeichert werden');
   }
 }
 
 /* ============================================================
-   Automatische Gesichtsbilder
+   Gesichtsschnappschüsse
    ============================================================ */
 async function maybeCaptureFaceSnapshots(faceBoxes, trackedFaces){
-  if(!faceSnapshotsEnabledInput.checked) return;
-  const now = performance.now();
-  const cooldownMs = getFaceCooldownMs();
+  if(!faceSnapshotsEnabledInput.checked || !faceBoxes.length) return;
 
-  for(let i=0;i<trackedFaces.length;i++){
-    const t = trackedFaces[i];
+  const now = Date.now();
+  const cooldown = getFaceCooldownMs();
+
+  for(let i=0;i<faceBoxes.length;i++){
+    const tracked = trackedFaces[i];
+    const id = tracked?.id ?? `face-${i}`;
+    const last = faceSnapshotTimes.get(id) || 0;
+    if(now - last < cooldown) continue;
+
     const f = faceBoxes[i];
-    const last = faceSnapshotTimes.get(t.id) || 0;
-    if(now - last < cooldownMs) continue;
-    faceSnapshotTimes.set(t.id, now);
-    captureFaceSnapshot(f.bbox).catch(e => console.error('Snapshot fehlgeschlagen', e));
+    const [x,y,w,h] = f.bbox;
+    const padX = w * 0.35;
+    const padY = h * 0.45;
+    const sx = Math.max(0, Math.floor(x-padX));
+    const sy = Math.max(0, Math.floor(y-padY));
+    const ex = Math.min(video.videoWidth, Math.ceil(x+w+padX));
+    const ey = Math.min(video.videoHeight, Math.ceil(y+h+padY));
+    const sw = Math.max(1, ex-sx);
+    const sh = Math.max(1, ey-sy);
+
+    const crop = document.createElement('canvas');
+    crop.width = sw;
+    crop.height = sh;
+    const cropCtx = crop.getContext('2d');
+    cropCtx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    try{
+      const blob = await new Promise(resolve => crop.toBlob(resolve, 'image/jpeg', 0.9));
+      if(!blob) continue;
+      const record = {
+        id:`face-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+        blob,
+        createdAt:Date.now(),
+        confidence:f.score
+      };
+      await idbPut(STORE_FACES, record);
+      faceSnapshotTimes.set(id, now);
+      await renderFaces();
+    }catch(e){
+      console.error('Gesichtsbild konnte nicht gespeichert werden:', e);
+    }
   }
 }
 
-async function captureFaceSnapshot(bbox){
-  const frameW = video.videoWidth, frameH = video.videoHeight;
-  if(!frameW || !frameH) return;
-
-  const [x,y,w,h] = bbox;
-  const padX = w*0.35, padY = h*0.45;
-  const sx = Math.max(0, x-padX);
-  const sy = Math.max(0, y-padY);
-  const sw = Math.min(frameW-sx, w+padX*2);
-  const sh = Math.min(frameH-sy, h+padY*2);
-  if(sw <= 0 || sh <= 0) return;
-
-  const off = document.createElement('canvas');
-  off.width = sw; off.height = sh;
-  off.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-
-  const blob = await new Promise(resolve => off.toBlob(resolve, 'image/jpeg', 0.85));
-  if(!blob) return;
-
-  const record = { id:`face-${Date.now()}-${Math.random().toString(36).slice(2,7)}`, blob, timestamp: Date.now() };
-  await idbPut(STORE_FACES, record);
-  await renderFaces();
-}
-
 /* ============================================================
-   Galerien (Aufnahmen + Gesichter) – aus IndexedDB gerendert
+   Aufnahmen / Galerie
    ============================================================ */
-const videoObjectUrls = new Map();
-const faceObjectUrls = new Map();
-function revokeAll(map){ map.forEach(url => URL.revokeObjectURL(url)); map.clear(); }
-
 async function renderRecordings(){
-  let records = [];
-  try{ records = await idbGetAll(STORE_VIDEOS); }
-  catch(e){ console.error('Aufnahmen konnten nicht geladen werden', e); }
-  records.sort((a,b) => b.timestamp - a.timestamp);
-
-  revokeAll(videoObjectUrls);
+  const items = await idbGetAll(STORE_VIDEOS);
+  items.sort((a,b)=>b.createdAt-a.createdAt);
   recordingsList.innerHTML = '';
-  recordingsEmpty.hidden = records.length > 0;
+  recordingsEmpty.hidden = items.length > 0;
 
-  for(const rec of records){
-    try{
-      const url = URL.createObjectURL(rec.blob);
-      videoObjectUrls.set(rec.id, url);
-
-      const item = document.createElement('div');
-      item.className = 'rec-item';
-
-      const vid = document.createElement('video');
-      vid.src = url; vid.controls = true; vid.playsInline = true;
-
-      const meta = document.createElement('div');
-      meta.className = 'rec-item-meta';
-      meta.textContent = `${new Date(rec.timestamp).toLocaleString('de-DE')} – ${formatDuration(rec.durationSeconds||0)}`;
-
-      const actions = document.createElement('div');
-      actions.className = 'rec-item-actions';
-
-      const ext = (rec.mimeType||'').includes('mp4') ? 'mp4' : 'webm';
-      const dl = document.createElement('a');
-      dl.href = url;
-      dl.download = `personcam-${formatFilenameStamp(rec.timestamp)}.${ext}`;
-      dl.textContent = 'Herunterladen';
-
-      const del = document.createElement('button');
-      del.textContent = 'Löschen';
-      del.addEventListener('click', async () => { await idbDelete(STORE_VIDEOS, rec.id); await renderRecordings(); });
-
-      actions.append(dl, del);
-      item.append(vid, meta, actions);
-      recordingsList.append(item);
-    }catch(e){ console.error('Aufnahme-Eintrag übersprungen (beschädigt)', e); }
+  for(const item of items){
+    const card = document.createElement('article');
+    card.className = 'media-card';
+    const url = URL.createObjectURL(item.blob);
+    card.innerHTML = `
+      <video controls playsinline preload="metadata" src="${url}"></video>
+      <div class="media-meta">
+        <span>${new Date(item.createdAt).toLocaleString('de-DE')}</span>
+        <span>${formatDuration(item.durationSeconds || 0)}</span>
+      </div>
+      <div class="media-actions">
+        <a class="btn btn-ghost" href="${url}" download="PersonCam-${formatFilenameStamp(item.createdAt)}.webm">Herunterladen</a>
+        <button class="btn btn-ghost delete-video">Löschen</button>
+      </div>`;
+    card.querySelector('.delete-video').addEventListener('click', async()=>{
+      await idbDelete(STORE_VIDEOS,item.id);
+      await renderRecordings();
+    });
+    recordingsList.appendChild(card);
   }
 }
 
 async function renderFaces(){
-  let records = [];
-  try{ records = await idbGetAll(STORE_FACES); }
-  catch(e){ console.error('Gesichtsbilder konnten nicht geladen werden', e); }
-  records.sort((a,b) => b.timestamp - a.timestamp);
-
-  revokeAll(faceObjectUrls);
+  const items = await idbGetAll(STORE_FACES);
+  items.sort((a,b)=>b.createdAt-a.createdAt);
   faceGallery.innerHTML = '';
-  facesEmpty.hidden = records.length > 0;
+  facesEmpty.hidden = items.length > 0;
 
-  for(const rec of records){
-    try{
-      const url = URL.createObjectURL(rec.blob);
-      faceObjectUrls.set(rec.id, url);
-
-      const card = document.createElement('div');
-      card.className = 'face-card';
-
-      const img = document.createElement('img');
-      img.src = url; img.alt = 'Erfasstes Gesicht'; img.loading = 'lazy';
-
-      const time = document.createElement('time');
-      time.textContent = new Date(rec.timestamp).toLocaleString('de-DE',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
-
-      card.append(img, time);
-      card.addEventListener('click', () => openLightbox(rec.id, url, rec.timestamp));
-      faceGallery.append(card);
-    }catch(e){ console.error('Gesichtsbild-Eintrag übersprungen (beschädigt)', e); }
+  for(const item of items){
+    const url = URL.createObjectURL(item.blob);
+    const el = document.createElement('button');
+    el.className = 'face-card';
+    el.innerHTML = `<img src="${url}" alt="Gesichtsbild"><span>${new Date(item.createdAt).toLocaleString('de-DE')}</span>`;
+    el.addEventListener('click',()=>openLightbox(item));
+    faceGallery.appendChild(el);
   }
 }
 
-clearVideosBtn.addEventListener('click', async () => {
-  if(!confirm('Wirklich alle Aufnahmen löschen?')) return;
-  await idbClear(STORE_VIDEOS);
-  await renderRecordings();
-});
-clearFacesBtn.addEventListener('click', async () => {
-  if(!confirm('Wirklich alle Gesichtsbilder löschen?')) return;
-  await idbClear(STORE_FACES);
-  await renderFaces();
-});
-
-/* ============================================================
-   Lightbox
-   ============================================================ */
-let lightboxFaceId = null;
-function openLightbox(id, url, timestamp){
-  lightboxFaceId = id;
+let lightboxItem = null;
+function openLightbox(item){
+  lightboxItem = item;
+  const url = URL.createObjectURL(item.blob);
   lightboxImg.src = url;
   lightboxDownload.href = url;
-  lightboxDownload.download = `personcam-face-${formatFilenameStamp(timestamp)}.jpg`;
+  lightboxDownload.download = `PersonCam-Gesicht-${formatFilenameStamp(item.createdAt)}.jpg`;
   lightbox.hidden = false;
 }
-function closeLightboxFn(){ lightbox.hidden = true; lightboxFaceId = null; }
-closeLightboxBtn.addEventListener('click', closeLightboxFn);
-lightbox.addEventListener('click', e => { if(e.target === lightbox) closeLightboxFn(); });
-lightboxDelete.addEventListener('click', async () => {
-  if(!lightboxFaceId) return;
-  await idbDelete(STORE_FACES, lightboxFaceId);
-  closeLightboxFn();
+function closeLightbox(){ lightbox.hidden = true; lightboxImg.src=''; }
+closeLightboxBtn.addEventListener('click', closeLightbox);
+lightbox.addEventListener('click',e=>{ if(e.target===lightbox) closeLightbox(); });
+lightboxDelete.addEventListener('click',async()=>{
+  if(!lightboxItem) return;
+  await idbDelete(STORE_FACES,lightboxItem.id);
+  closeLightbox();
   await renderFaces();
 });
-
-/* ============================================================
-   Einstellungs-Sheet + Tabs
-   ============================================================ */
-function closeSettingsSheet(){ settingsOverlay.hidden = true; }
-settingsBtn.addEventListener('click', () => { settingsOverlay.hidden = false; });
-closeSettingsBtn.addEventListener('click', closeSettingsSheet);
-settingsOverlay.addEventListener('click', e => { if(e.target === settingsOverlay) closeSettingsSheet(); });
-
-tabBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    tabBtns.forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
-    btn.classList.add('active');
-    btn.setAttribute('aria-selected','true');
-    const tab = btn.dataset.tab;
-    recordingsPanel.hidden = tab !== 'recordings';
-    facesPanel.hidden = tab !== 'faces';
-  });
+clearVideosBtn.addEventListener('click',async()=>{
+  if(confirm('Alle Aufnahmen löschen?')){ await idbClear(STORE_VIDEOS); await renderRecordings(); }
+});
+clearFacesBtn.addEventListener('click',async()=>{
+  if(confirm('Alle Gesichtsbilder löschen?')){ await idbClear(STORE_FACES); await renderFaces(); }
 });
 
-/* ============================================================
-   Start
-   ============================================================ */
-startBtn.addEventListener('click', startCamera);
-stopBtn.addEventListener('click', stopCamera);
-window.addEventListener('beforeunload', () => stream?.getTracks().forEach(t=>t.stop()));
+tabBtns.forEach(btn=>btn.addEventListener('click',()=>{
+  const tab = btn.dataset.tab;
+  tabBtns.forEach(b=>{
+    const active=b===btn;
+    b.classList.toggle('active',active);
+    b.setAttribute('aria-selected',String(active));
+  });
+  recordingsPanel.hidden = tab!=='recordings';
+  facesPanel.hidden = tab!=='faces';
+}));
 
+/* ============================================================
+   Einstellungen
+   ============================================================ */
+function openSettingsSheet(){ settingsOverlay.hidden=false; }
+function closeSettingsSheet(){ settingsOverlay.hidden=true; }
+settingsBtn.addEventListener('click',openSettingsSheet);
+closeSettingsBtn.addEventListener('click',closeSettingsSheet);
+settingsOverlay.addEventListener('click',e=>{ if(e.target===settingsOverlay) closeSettingsSheet(); });
+
+/* ============================================================
+   Initialisierung
+   ============================================================ */
 (async function init(){
   loadSettings();
-  try{
-    await ensurePinProvisioned();
-  }catch(e){
-    console.error('PIN konnte nicht initialisiert werden', e);
-    pinError.textContent = 'Sicherheitsfunktion (Web Crypto) nicht verfügbar – bitte über HTTPS oder localhost öffnen.';
-    pinError.hidden = false;
-  }
+  await ensurePinProvisioned();
   pinInput.focus();
 })();
