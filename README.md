@@ -21,15 +21,25 @@ entsprechend auf einer HTTPS-Webseite hosten.
 ## PIN-Sperre
 Beim Öffnen der Seite ist die Kamera-/Aufnahmeoberfläche zunächst gesperrt.
 
-- Start-PIN: **1234** (bitte nach dem ersten Start in den Einstellungen ändern)
+- Start-PIN: **1234** (steht auch als Hinweis auf dem Sperrbildschirm, bitte
+  nach dem ersten Start in den Einstellungen ändern)
 - Die PIN wird nicht im Klartext gespeichert, sondern nur als PBKDF2-Hash
-  (Web Crypto API, 150.000 Iterationen) plus zufälligem Salt in localStorage.
+  (Web Crypto API, 20.000 Iterationen) plus zufälligem Salt in localStorage.
 - Kamera- und Mikrofonzugriff werden erst NACH erfolgreicher PIN-Eingabe
   angefragt – beim bloßen Laden der Seite passiert nichts.
 - „Jetzt sperren" (Kopfzeile oder Einstellungen) stoppt die Kamera sofort und
   zeigt wieder die PIN-Eingabe.
 - PIN ändern: Einstellungen → Sicherheit → PIN ändern (aktuelle PIN + neue PIN
   zweimal).
+
+**Falls die PIN-Eingabe nicht reagiert oder "Entsperren" nichts tut:** Das
+liegt fast immer an einem alten, aus einer früheren Version stammenden
+PIN-Hash in localStorage. Einmal die Website-Daten dieser Seite löschen
+(Browser-Einstellungen → Website-/Verlaufsdaten löschen, nur für diese
+Adresse) oder in der Browser-Konsole `localStorage.clear()` ausführen und die
+Seite neu laden – danach wird die PIN 1234 sauber neu angelegt. Das löscht nur
+die PIN, keine gespeicherten Videos/Gesichtsbilder (die liegen separat in
+IndexedDB).
 
 ## Personen & Gesichter
 Personen-Erkennung läuft mit TensorFlow.js (COCO-SSD, Modell "mobilenet_v2").
@@ -62,7 +72,7 @@ an/aus, Mindest-Konfidenz und Abstand zwischen Gesichts-Schnappschüssen.
 Die Nummerierung (`PERSON 1`, `PERSON 2`, …) ist **rein sitzungsbasiert**: Sie
 ordnet Boxen nur anhand von Position/Bewegung *innerhalb einer laufenden
 Kamera-Aufnahme* zu und vergisst eine Nummer, sobald die Person länger als 2
-Sekunden nicht mehr im Bild ist oder die Kamera neu gestartet wird. Es findet
+Sekunden nicht im Bild ist oder die Kamera neu gestartet wird. Es findet
 **keine biometrische Gesichtserkennung/Wiedererkennung** statt – die App
 erstellt keine dauerhaften Personenprofile, keine „diese Person war schon
 X-mal hier"-Zählung über mehrere Videos hinweg und speichert keine
@@ -94,8 +104,8 @@ Gesichtsbilder liegen nur in der IndexedDB dieses Browsers/Geräts und lassen
 sich jederzeit über die App (einzeln oder "Alle löschen") entfernen.
 
 ## Einschränkung
-Die grünen HUD-Rahmen sind ein Overlay der Live-Ansicht und werden nicht in
-das gespeicherte Video eingebrannt.
+Die grünen HUD-Rahmen sind ein Overlay der Live-Ansicht und werden nicht in das
+gespeicherte Video eingebrannt.
 
 ## Technische Details / Stellschrauben
 Alle wichtigen Konstanten stehen gesammelt oben in `app.js`:
