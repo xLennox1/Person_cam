@@ -389,30 +389,48 @@ async function loadModels(){
 async function startCamera(){
   if(running) return;
 
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({
-      video:{ facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} },
-      audio:true
-    });
-  }catch(e){
-    console.error(e);
-    let msg = 'Bitte erlaube den Kamera-/Mikrofonzugriff. Die Seite muss in der Regel über HTTPS oder localhost laufen.';
-    if(e.name === 'NotFoundError') msg = 'Keine Kamera gefunden.';
-    else if(e.name === 'NotReadableError') msg = 'Die Kamera wird bereits von einer anderen App verwendet.';
-    else if(e.name === 'NotAllowedError') msg = 'Kamera-/Mikrofonzugriff wurde verweigert.';
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     setStatus('Kamera konnte nicht gestartet werden');
-    alert(msg);
+    alert('Kamerazugriff ist hier nicht verfügbar. Die Seite muss über HTTPS oder localhost aufgerufen werden (siehe README).');
     return;
   }
 
-  video.srcObject = stream;
-  await video.play();
-  running = true;
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
+  const videoConstraints = { facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720} };
+  let usedAudio = true;
 
   try{
-    setStatus('Kamera läuft – KI-Modelle werden geladen…');
+    stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: true });
+  }catch(e){
+    // Laut Spezifikation schlägt getUserMedia komplett fehl, wenn EINES von Video/Audio
+    // nicht verfügbar ist -- ein fehlendes/blockiertes Mikrofon darf die Kamera nicht
+    // mit verhindern. Deshalb hier ohne Ton erneut versuchen, bevor wir aufgeben.
+    console.warn('Kamera mit Ton fehlgeschlagen, versuche ohne Mikrofon:', e);
+    usedAudio = false;
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    }catch(e2){
+      console.error(e2);
+      let msg = 'Bitte erlaube den Kamerazugriff. Die Seite muss in der Regel über HTTPS oder localhost laufen.';
+      if(e2.name === 'NotFoundError') msg = 'Keine Kamera gefunden.';
+      else if(e2.name === 'NotReadableError') msg = 'Die Kamera wird bereits von einer anderen App verwendet.';
+      else if(e2.name === 'NotAllowedError') msg = 'Kamerazugriff wurde verweigert.';
+      else if(e2.name === 'OverconstrainedError') msg = 'Die Kamera unterstützt die angeforderte Auflösung nicht.';
+      setStatus('Kamera konnte nicht gestartet werden');
+      alert(msg);
+      return;
+    }
+  }
+
+  try{
+    video.srcObject = stream;
+    await video.play();
+    running = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    setStatus(usedAudio
+      ? 'Kamera läuft – KI-Modelle werden geladen…'
+      : 'Kamera läuft ohne Ton (kein Mikrofon verfügbar) – KI-Modelle werden geladen…');
     await loadModels();
     personStreak = 0;
     detecting = false;
@@ -420,9 +438,12 @@ async function startCamera(){
     personTracker.reset();
     faceTracker.reset();
     faceSnapshotTimes.clear();
-    setStatus('Bereit – Personen werden erkannt');
+    setStatus(usedAudio ? 'Bereit – Personen werden erkannt' : 'Bereit (ohne Ton) – Personen werden erkannt');
     detectLoop();
   }catch(e){
+    // Deckt sowohl einen fehlgeschlagenen video.play() als auch fehlgeschlagenes Laden
+    // der KI-Modelle ab -- vorher konnte hier ein stiller Fehler die Kamera im
+    // Hintergrund weiterlaufen lassen, ohne dass die Oberfläche das anzeigte.
     console.error(e);
     running = false;
     startBtn.disabled = false;
@@ -430,8 +451,8 @@ async function startCamera(){
     stream?.getTracks().forEach(t=>t.stop());
     stream = null;
     video.srcObject = null;
-    setStatus('KI-Modelle konnten nicht geladen werden');
-    alert('Die Erkennungsmodelle konnten nicht geladen werden. Bitte Internetverbindung prüfen und erneut versuchen.');
+    setStatus('Kamera konnte nicht gestartet werden');
+    alert('Kamera oder Erkennungsmodelle konnten nicht gestartet werden. Bitte Internetverbindung prüfen und erneut versuchen.');
   }
 }
 
